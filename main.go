@@ -3,6 +3,7 @@ package main
 import (
 	"./mNet"
 	"log"
+	"os"
 )
 
 func main() {
@@ -24,7 +25,5 @@ func main() {
 		return
 	}
 
-	for {
-	}
-
+	log.Printf("[%d] pid is over" , os.Getpid())
 }
