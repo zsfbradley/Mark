@@ -20,10 +20,22 @@ func main() {
 		return
 	}
 
+	if err := s.RegisterEntranceFunc(entrance); err != nil {
+		log.Println(err)
+		return
+	}
+
 	if err := s.Start(); err != nil {
 		log.Println(err)
 		return
 	}
 
 	log.Printf("[%d] pid is over" , os.Getpid())
+}
+
+func entrance() error {
+
+	log.Println("frank here")
+
+	return nil
 }

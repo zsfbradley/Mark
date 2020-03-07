@@ -26,9 +26,10 @@ func NewServer(sConfig ServerConfig) (mFace.MServer, error) {
 	sConfig.parse()
 
 	s := &server{
-		config:          sConfig,
-		status:          mConst.MServe_Status_UnStart,
-		listener:        nil,
+		config:    sConfig,
+		status:    mConst.MServe_Status_UnStart,
+		listener:  nil,
+		eFuncList: make([]mFace.EntranceFunc, 0),
 	}
 
 	err := s.Load()
@@ -56,9 +57,11 @@ func (sc *ServerConfig) parse() {
 }
 
 type server struct {
-	config          ServerConfig
-	status          mConst.MServe_Status
-	listener        net.Listener
+	config   ServerConfig
+	status   mConst.MServe_Status
+	listener net.Listener
+
+	eFuncList []mFace.EntranceFunc
 }
 
 func (s *server) Status() mConst.MServe_Status {
@@ -87,11 +90,15 @@ func (s *server) Start() error {
 
 	s.status = mConst.MServe_Status_Start
 
-	go s.acceptConnect()
+	if err := s.execEntranceFunc(); err != nil { // exec registered entrance function
+		return err
+	}
+
+	go s.acceptConnect()	// start accept new connection
 
 	log.Printf("[%s] Server are started.", s.config.Name)
 
-	return s.monitorSignal()
+	return s.monitorSignal()	// monitor signal
 }
 
 func (s *server) Reload() error {
@@ -113,6 +120,16 @@ func (s *server) Stop() error {
 	s.status = mConst.MServe_Status_Stoped
 
 	log.Printf("[%s] Server are stoped.", s.config.Name)
+
+	return nil
+}
+
+func (s *server) RegisterEntranceFunc(eFunc mFace.EntranceFunc) error {
+	if eFunc == nil {
+		return errors.New("eFunc is nil")
+	}
+
+	s.eFuncList = append(s.eFuncList, eFunc)
 
 	return nil
 }
@@ -171,6 +188,15 @@ func handleConn(conn net.Conn) {
 
 }
 
+func (s *server) execEntranceFunc() error {
+	for _ , eFunc := range s.eFuncList {
+		if err := eFunc(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *server) monitorSignal() error {
 	signalChan := make(chan os.Signal)
 	signal.Notify(signalChan, syscall.SIGHUP, syscall.SIGINT,
@@ -179,23 +205,16 @@ func (s *server) monitorSignal() error {
 
 	log.Printf("[%s] Server accept signal info : %s", s.config.Name, signalInfo)
 
-	//MonitorSignal:
+	signal.Stop(signalChan)
+
 	switch signalInfo {
 	case syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM:
 		log.Printf("[%s] Server gonna stop", s.config.Name)
 		if err := s.Stop(); err != nil {
 			return err
 		}
-		signal.Stop(signalChan)
-	//case syscall.SIGUSR1:
-	//	log.Printf("[%s] Server gonna reload", s.config.Name)
-	//	if err := s.Reload(); err != nil {
-	//		return err
-	//	}
-	//	goto MonitorSignal
 	case syscall.SIGUSR2:
 		log.Printf("[%s] Server gonna restart", s.config.Name)
-		signal.Stop(signalChan)
 		if err := s.restart(); err != nil {
 			return err
 		}
