@@ -1,10 +1,9 @@
 package mFace
 
-type EntranceFunc func() error
-
 type MServer interface {
-	MServeBase
+	MServe
+	MServeLoad
 	MServeStop
 
-	RegisterEntranceFunc(EntranceFunc) error
+	Config() ServerConfig
 }

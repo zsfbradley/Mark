@@ -4,10 +4,13 @@ import (
 	"../mConst"
 )
 
-type MServeBase interface {
+type MServe interface {
 	Status() mConst.MServe_Status
-	Load() error
 	Start() error
+}
+
+type MServeLoad interface {
+	Load() error
 	Reload() error
 }
 

@@ -3,39 +3,15 @@ package main
 import (
 	"./mNet"
 	"log"
-	"os"
 )
-
 func main() {
-	sc := mNet.ServerConfig{
-		Name:    "Frank",
-		Host:    "0.0.0.0",
-		Port:    "8888",
-		Network: "tcp",
-	}
+	s := mNet.NewServer()
 
-	s, err := mNet.NewServer(sc)
+	err := s.Load()
 	if err != nil {
 		log.Println(err)
 		return
 	}
 
-	if err := s.RegisterEntranceFunc(entrance); err != nil {
-		log.Println(err)
-		return
-	}
-
-	if err := s.Start(); err != nil {
-		log.Println(err)
-		return
-	}
-
-	log.Printf("[%d] pid is over" , os.Getpid())
-}
-
-func entrance() error {
-
-	log.Println("frank here")
-
-	return nil
+	log.Println(s.Start())
 }

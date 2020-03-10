@@ -1,0 +1,6 @@
+{
+  "name": "Mark6.0",
+  "network": "tcp",
+  "host": "0.0.0.0",
+  "port": "8888"
+}

@@ -3,242 +3,230 @@ package mNet
 import (
 	"../mConst"
 	"../mFace"
-	"../mTool"
-	"errors"
-	"flag"
 	"log"
 	"net"
-	"os"
-	"os/exec"
-	"os/signal"
-	"syscall"
 )
 
-var graceful = flag.Bool("graceful", false, "The listener of file descriptor")
-
 func init() {
-	flag.Parse()
-	log.Printf("This program is taking [%d] pid", os.Getpid())
-	log.Printf("The args : %v", os.Args)
+	log.Println(mConst.Framework_Line)
+	log.Printf("%s[%s%s]%s", mConst.Framework_Line_Half, mConst.Framework_Name, mConst.Framework_Version, mConst.Framework_Line_Half)
+	log.Println(mConst.Framework_Line)
 }
 
-func NewServer(sConfig ServerConfig) (mFace.MServer, error) {
-	sConfig.parse()
+func NewServer() mFace.MServer {
+	return NewServerWithConfig(defaultConfig())
+}
 
+func NewServerWithConfigPath(filePath string) mFace.MServer {
+	return NewServerWithConfig(loadConfigWithFilePath(filePath))
+}
+
+func NewServerWithConfig(config mFace.MConfig) mFace.MServer {
 	s := &server{
-		config:    sConfig,
-		status:    mConst.MServe_Status_UnStart,
-		listener:  nil,
-		eFuncList: make([]mFace.EntranceFunc, 0),
+		status:   mConst.MServe_Status_UnStart,
+		cm:       newConnManager(),
+		mm:       newMessageManager(),
+		rm:       newRouteManager(),
+		config:   config,
+		listener: nil,
 	}
 
-	err := s.Load()
+	s.cm.BindServer(s)
+	s.mm.BindServer(s)
+	s.rm.BindServer(s)
 
-	return s, err
-}
-
-type ServerConfig struct {
-	Name    string // option , default is "default"
-	Host    string // option , default is 0.0.0.0
-	Port    string // require	, server not gonna listen without port
-	Network string // option , default is tcp
-}
-
-func (sc *ServerConfig) parse() {
-	if sc.Name == "" {
-		sc.Name = mConst.Framework_Name + mConst.Framework_Version
-	}
-	if sc.Host == "" {
-		sc.Host = mConst.Default_Host
-	}
-	if sc.Network == "" {
-		sc.Network = mConst.Network_TCP
-	}
+	return s
 }
 
 type server struct {
-	config   ServerConfig
-	status   mConst.MServe_Status
-	listener net.Listener
+	status mConst.MServe_Status
+	cm     mFace.MConnManager
+	mm     mFace.MMessageManager
+	rm     mFace.MRouteManager
 
-	eFuncList []mFace.EntranceFunc
+	config   mFace.MConfig
+	listener net.Listener
 }
 
 func (s *server) Status() mConst.MServe_Status {
 	return s.status
 }
 
+func (s *server) Config() mFace.ServerConfig {
+	return s.config.ServerConfig()
+}
+
 func (s *server) Load() error {
-	log.Printf("[%s] Server are loading.", s.config.Name)
-
-	// TODO:connManager.Load(),MessageManager.Load(),RouteManager.Load()
-
 	s.status = mConst.MServe_Status_Load
+	log.Printf("[%s] start load", mConst.Framework_Name+mConst.Framework_Version)
 
-	if err := s.loadListener(); err != nil {
+	if err := s.config.Load(); err != nil {
 		return err
 	}
 
-	log.Printf("[%s] Server finish load.", s.config.Name)
+	if err := s.cm.Load(); err != nil {
+		return err
+	}
+
+	if err := s.mm.Load(); err != nil {
+		return err
+	}
+
+	if err := s.rm.Load(); err != nil {
+		return err
+	}
+
+	// load listener in the end
+	if s.config.ListenServe() {
+		listener, err := net.Listen(s.config.ServerConfig().Network, s.config.Address())
+		if err != nil {
+			return err
+		}
+
+		s.listener = listener
+	}
+
+	log.Printf("[%s] finish load", s.config.ServerConfig().Name)
+
 	return nil
 }
 
 func (s *server) Start() error {
-	log.Printf("[%s] Server are starting.", s.config.Name)
+	log.Printf("[%s] starting", s.config.ServerConfig().Name)
 
-	// TODO:connManager.Start(),MessageManager.Start(),RouteManager.Start()
-
-	s.status = mConst.MServe_Status_Start
-
-	if err := s.execEntranceFunc(); err != nil { // exec registered entrance function
+	if err := s.cm.Start(); err != nil {
 		return err
 	}
 
-	go s.acceptConnect()	// start accept new connection
+	if err := s.mm.Start(); err != nil {
+		return err
+	}
 
-	log.Printf("[%s] Server are started.", s.config.Name)
+	if err := s.rm.Start(); err != nil {
+		return err
+	}
 
-	return s.monitorSignal()	// monitor signal
+	s.status = mConst.MServe_Status_Start
+
+	// start accept connection
+	if s.listener != nil && s.config.ListenServe() {
+		go s.startAcceptConnection()
+	}
+
+	log.Printf("[%s] started", s.config.ServerConfig().Name)
+	return nil
 }
 
 func (s *server) Reload() error {
-	log.Printf("[%s] Server are reLoading.", s.config.Name)
+	s.status = mConst.MServe_Status_Reload
+	log.Printf("[%s] start reload", mConst.Framework_Name+mConst.Framework_Version)
+
+	lastListenAddr := s.config.Address()
+
+	if err := s.config.Reload(); err != nil {
+		return err
+	}
+
+	if err := s.cm.Reload(); err != nil {
+		return err
+	}
+
+	if err := s.mm.Reload(); err != nil {
+		return err
+	}
+
+	if err := s.rm.Reload(); err != nil {
+		return err
+	}
+
+	// reload and start listener in the end
+	if s.config.ListenServe() && lastListenAddr != s.config.Address() {
+		listener, err := net.Listen(s.config.ServerConfig().Network, s.config.Address())
+		if err != nil {
+			return err
+		}
+
+		// close last listener
+		if s.listener != nil {
+			if err := s.listener.Close(); err != nil {
+				return err
+			}
+		}
+
+		s.listener = listener
+
+		go s.startAcceptConnection()
+	}
+
+	log.Printf("[%s] finish reload", s.config.ServerConfig().Name)
+
+	s.status = mConst.MServe_Status_Start
+
 	return nil
 }
 
 func (s *server) Stop() error {
-	log.Printf("[%s] Server are stopping.", s.config.Name)
+	log.Printf("[%s] start stop", s.config.ServerConfig().Name)
 
 	s.status = mConst.MServe_Status_StartEnding
 
-	_ = s.listener.Close()
-
-	// TODO:connManager.StartEnding(),MessageManager.StartEnding(),RouteManager.StartEnding()
-	// TODO:connManager.OfficialEnding(),MessageManager.OfficialEnding(),RouteManager.OfficialEnding()
-
-	s.status = mConst.MServe_Status_OfficialEnding
-	s.status = mConst.MServe_Status_Stoped
-
-	log.Printf("[%s] Server are stoped.", s.config.Name)
-
-	return nil
-}
-
-func (s *server) RegisterEntranceFunc(eFunc mFace.EntranceFunc) error {
-	if eFunc == nil {
-		return errors.New("eFunc is nil")
+	if s.listener != nil {
+		if err := s.listener.Close(); err != nil {
+			return err
+		}
 	}
 
-	s.eFuncList = append(s.eFuncList, eFunc)
-
-	return nil
-}
-
-// --private functions
-
-func (s *server) loadListener() error {
-	if mTool.IsStringEmpty(s.config.Port) {
-		return nil // server not gonna listen without port,but still monitor MQ
-	}
-
-	var listener net.Listener
-	var err error
-
-	if *graceful {
-		log.Printf("[%s] Server gonna using file descriptor 3.", s.config.Name)
-		f := os.NewFile(3, "")
-		listener, err = net.FileListener(f)
-	} else {
-		log.Printf("[%s] Server gonna using new file descriptor.", s.config.Name)
-		addr := net.JoinHostPort(s.config.Host, s.config.Port)
-		listener, err = net.Listen(s.config.Network, addr)
-	}
-
-	if err != nil {
+	if err := s.cm.StartEnding(); err != nil {
 		return err
 	}
 
-	s.listener = listener
+	if err := s.mm.StartEnding(); err != nil {
+		return err
+	}
+
+	if err := s.rm.StartEnding(); err != nil {
+		return err
+	}
+
+	if err := s.rm.OfficialEnding(); err != nil {
+		return err
+	}
+
+	if err := s.cm.OfficialEnding(); err != nil {
+		return err
+	}
+
+	if err := s.rm.OfficialEnding(); err != nil {
+		return err
+	}
+
+	s.status = mConst.MServe_Status_OfficialEnding
+	s.status = mConst.MServe_Status_Stoped
+	log.Printf("[%s] stoped", s.config.ServerConfig().Name)
 
 	return nil
 }
 
-func (s *server) acceptConnect() {
-	if s.listener == nil {
-		return
-	}
+// ----------------------------------------------------------- private methods
 
-	log.Printf("[%s] Server accept connect on %s", s.config.Name, s.listener.Addr())
-
+func (s *server) startAcceptConnection() {
+	log.Printf("[%s] server gonna listen and serve on %s", s.config.ServerConfig().Name, s.config.Address())
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
+			log.Printf("[%s] server listener on %saccept error %s", s.config.ServerConfig().Name, s.config.Address(), err)
 			if s.status >= mConst.MServe_Status_StartEnding {
 				break
+			} else {
+				continue
 			}
-			log.Printf("[%s] Listener accept connect error : %v", s.config.Name, err)
-			continue
 		}
 		go handleConn(conn)
 	}
-	log.Printf("[%s] Server are out of accept connect.", s.config.Name)
+
+	log.Printf("[%s] server stop listen and serve on %s", s.config.ServerConfig().Name, s.config.Address())
 }
 
 func handleConn(conn net.Conn) {
 
-}
-
-func (s *server) execEntranceFunc() error {
-	for _ , eFunc := range s.eFuncList {
-		if err := eFunc(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *server) monitorSignal() error {
-	signalChan := make(chan os.Signal)
-	signal.Notify(signalChan, syscall.SIGHUP, syscall.SIGINT,
-		syscall.SIGTERM, syscall.SIGUSR1, syscall.SIGUSR2)
-	signalInfo := <-signalChan
-
-	log.Printf("[%s] Server accept signal info : %s", s.config.Name, signalInfo)
-
-	signal.Stop(signalChan)
-
-	switch signalInfo {
-	case syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM:
-		log.Printf("[%s] Server gonna stop", s.config.Name)
-		if err := s.Stop(); err != nil {
-			return err
-		}
-	case syscall.SIGUSR2:
-		log.Printf("[%s] Server gonna restart", s.config.Name)
-		if err := s.restart(); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (s *server) restart() error {
-	tcpListener, ok := s.listener.(*net.TCPListener)
-	if !ok {
-		return errors.New("listener is not tcp listener")
-	}
-
-	f, err := tcpListener.File()
-	if err != nil {
-		return err
-	}
-
-	args := []string{"-graceful"}
-	cmd := exec.Command(os.Args[0], args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.ExtraFiles = []*os.File{f}
-
-	return cmd.Start()
 }
