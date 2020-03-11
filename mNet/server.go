@@ -3,6 +3,7 @@ package mNet
 import (
 	"../mConst"
 	"../mFace"
+	"errors"
 	"log"
 	"net"
 )
@@ -23,12 +24,14 @@ func NewServerWithConfigPath(filePath string) mFace.MServer {
 
 func NewServerWithConfig(config mFace.MConfig) mFace.MServer {
 	s := &server{
-		status:   mConst.MServe_Status_UnStart,
-		cm:       newConnManager(),
-		mm:       newMessageManager(),
-		rm:       newRouteManager(),
-		config:   config,
-		listener: nil,
+		status:       mConst.MServe_Status_UnStart,
+		cm:           newConnManager(),
+		mm:           newMessageManager(),
+		rm:           newRouteManager(),
+		config:       config,
+		listener:     nil,
+		entFunc:      make([]mFace.EntranceFunc, 0),
+		codecCreator: defaultCodec,
 	}
 
 	s.cm.BindServer(s)
@@ -46,6 +49,10 @@ type server struct {
 
 	config   mFace.MConfig
 	listener net.Listener
+
+	entFunc []mFace.EntranceFunc
+
+	codecCreator mFace.CodecCreatorFunc
 }
 
 func (s *server) Status() mConst.MServe_Status {
@@ -107,6 +114,13 @@ func (s *server) Start() error {
 	}
 
 	s.status = mConst.MServe_Status_Start
+
+	// start exec entrance function
+	for _, encFunc := range s.entFunc {
+		if err := encFunc(); err != nil {
+			return err
+		}
+	}
 
 	// start accept connection
 	if s.listener != nil && s.config.ListenServe() {
@@ -207,6 +221,28 @@ func (s *server) Stop() error {
 	return nil
 }
 
+func (s *server) RegisterEncFunc(encFunc mFace.EntranceFunc) error {
+	if s.status >= mConst.MServe_Status_Start {
+		return errors.New("server already started")
+	}
+
+	if encFunc == nil {
+		return errors.New("entrance function can't be nil")
+	}
+
+	s.entFunc = append(s.entFunc, encFunc)
+	return nil
+}
+
+func (s *server) RegisterCodecCreator(codec mFace.CodecCreatorFunc) error {
+	if codec == nil {
+		return errors.New("codec creator can not be nil")
+	}
+
+	s.codecCreator = codec
+	return nil
+}
+
 // ----------------------------------------------------------- private methods
 
 func (s *server) startAcceptConnection() {
@@ -221,12 +257,9 @@ func (s *server) startAcceptConnection() {
 				continue
 			}
 		}
-		go handleConn(conn)
+		codec := s.codecCreator(conn)
+		s.cm.AcceptNewConn(codec)
 	}
 
 	log.Printf("[%s] server stop listen and serve on %s", s.config.ServerConfig().Name, s.config.Address())
-}
-
-func handleConn(conn net.Conn) {
-
 }

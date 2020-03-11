@@ -6,4 +6,7 @@ type MConnManager interface {
 	MServeEnding
 
 	BindServer(MServer)
+
+	AcceptNewConn(MCodec)
+	DeleteConn(string)
 }

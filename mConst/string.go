@@ -10,4 +10,6 @@ const (
 const (
 	Network_TCP  = "TCP"
 	Default_Host = "0.0.0.0"
+
+	Refuse_Connect_Of_Limit = "Sorry , the [%s] server is running at maximum load."
 )
